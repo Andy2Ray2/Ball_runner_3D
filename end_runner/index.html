@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Minecraft End Runner</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #1a0b2e; touch-action: none; font-family: 'Courier New', monospace; }
+  canvas { display: block; width: 100%; height: 100vh; image-rendering: pixelated; }
+  
+  #ui {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  #score {
+    margin-top: 20px; 
+    font-size: 4rem;
+    color: #fff;
+    font-weight: bold;
+    text-shadow: 4px 4px 0 #000;
+    z-index: 10;
+    font-family: monospace;
+  }
+
+  #menu {
+    position: absolute;
+    top: 65%; 
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 30px;
+    border: 4px solid #fff;
+    pointer-events: auto;
+    max-width: 90%;
+    width: 340px;
+  }
+
+  h1 { 
+    color: #dcdcdc; 
+    margin: 0 0 15px 0; 
+    font-size: 1.8rem;
+    text-transform: uppercase; 
+    letter-spacing: 2px;
+    text-shadow: 2px 2px 0 #000;
+  }
+  
+  p { color: #aaa; margin-bottom: 20px; font-size: 1rem; line-height: 1.4; }
+  
+  .controls-info {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 25px;
+    flex-wrap: wrap;
+  }
+  
+  .control-box {
+    background: rgba(255,255,255,0.1);
+    padding: 12px;
+    font-size: 0.85rem;
+    color: #fff;
+    min-width: 130px;
+    border: 2px solid #555;
+  }
+
+  button {
+    background: #7b1fa2;
+    color: #fff;
+    border: 2px solid #fff;
+    padding: 15px 50px;
+    font-size: 1.4rem;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 4px 4px 0 #000;
+    transition: transform 0.1s;
+    width: 100%;
+    font-family: monospace;
+  }
+  button:active { transform: scale(0.95); box-shadow: 2px 2px 0 #000; }
+
+  .hidden { display: none !important; }
+  
+  .win-text {
+    color: #ffff55 !important;
+    text-shadow: 2px 2px 0 #000 !important;
+    font-size: 2rem !important;
+  }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <div id="score">0</div>
+</div>
+
+<div id="menu">
+  <h1 id="menuTitle">END RUNNER</h1>
+  <div class="controls-info" id="controlsInfo">
+    <div class="control-box"> Тап СВЕРХУ<br>= ПРЫЖОК ⬆️</div>
+    <div class="control-box"> Тап СНИЗУ<br>= ПОВОРОТ ↔️</div>
+    <div class="control-box">💻 W / ⬆️<br>= ПРЫЖОК</div>
+    <div class="control-box">💻 A/D / ⬅️➡️<br>= ПОВОРОТ</div>
+  </div>
+  <p id="menuText">Прыгай через широкие разрывы.<br>Объезжай высокие столбы.</p>
+  <button id="startBtn">НАЧАТЬ</button>
+</div>
+
+<!-- Three.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+  // --- ГЕНЕРАЦИЯ ТЕКСТУР ---
+  function createPixelTexture(colorBase, noiseColor, size = 64) {
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    
+    ctx.fillStyle = colorBase;
+    ctx.fillRect(0, 0, size, size);
+    
+    for(let i=0; i<400; i++) {
+      const x = Math.floor(Math.random() * (size/4)) * 4;
+      const y = Math.floor(Math.random() * (size/4)) * 4;
+      ctx.fillStyle = Math.random() > 0.5 ? noiseColor : 'rgba(0,0,0,0.1)';
+      ctx.fillRect(x, y, 4, 4);
+    }
+    
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    return tex;
+  }
+
+  const endStoneTex = createPixelTexture('#e6dbac', '#c2b280');
+  const obsidianTex = createPixelTexture('#1a0b2e', '#4b0082');
+
+  // --- СЦЕНА ---
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a0b2e);
+  scene.fog = new THREE.FogExp2(0x1a0b2e, 0.015);
+
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 4, 7);
+  camera.lookAt(0, 0, -5);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: false });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  // --- СВЕТ ---
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+  scene.add(ambientLight);
+
+  const dirLight = new THREE.DirectionalLight(0xffccff, 0.8);
+  dirLight.position.set(5, 10, 5);
+  dirLight.castShadow = true;
+  scene.add(dirLight);
+
+  // --- ИГРОК (ШАРИК) ---
+  const playerGeo = new THREE.SphereGeometry(0.5, 32, 32);
+  const playerMat = new THREE.MeshStandardMaterial({ 
+    color: 0xffffff,
+    emissive: 0xaaaaaa,
+    emissiveIntensity: 0.2
+  });
+  const player = new THREE.Mesh(playerGeo, playerMat);
+  player.castShadow = true;
+  player.position.y = 0.5;
+  scene.add(player);
+
+  // --- ПАРАМЕТРЫ ГЕНЕРАЦИИ ---
+  const ISLAND_LENGTH = 40; 
+  const GAP_LENGTH = 8;     
+  const TOTAL_SEGMENT = ISLAND_LENGTH + GAP_LENGTH;
+
+  let islands = [];
+  let obstacles = [];
+  
+  const islandGeo = new THREE.BoxGeometry(4, 1, ISLAND_LENGTH); 
+  const islandMat = new THREE.MeshStandardMaterial({ map: endStoneTex });
+  
+  const obsidianGeo = new THREE.BoxGeometry(1, 8, 1);
+  const obsidianMat = new THREE.MeshStandardMaterial({ map: obsidianTex });
+
+  // Невидимый барьер для дыры
+  const invisibleBarrierGeo = new THREE.BoxGeometry(4, 2, GAP_LENGTH); 
+  const invisibleBarrierMat = new THREE.MeshBasicMaterial({ visible: false }); 
+
+  let nextIsWallCount = 0; 
+
+  function spawnSegment(zPos) {
+    // 1. Остров
+    const island = new THREE.Mesh(islandGeo, islandMat);
+    island.position.set(0, -0.5, zPos);
+    island.receiveShadow = true;
+    scene.add(island);
+    islands.push(island);
+
+    // 2. Невидимый барьер НАД дырой
+    const gapCenterZ = zPos - (ISLAND_LENGTH / 2) - (GAP_LENGTH / 2);
+    
+    const barrier = new THREE.Mesh(invisibleBarrierGeo, invisibleBarrierMat);
+    barrier.position.set(0, 1.5, gapCenterZ); 
+    barrier.userData = { type: 'invisible_pit' };
+    scene.add(barrier);
+    obstacles.push(barrier);
+
+    // 3. Обсидиан на острове
+    let typeToSpawn = '';
+    if (nextIsWallCount > 0) {
+      typeToSpawn = 'wall';
+      nextIsWallCount--;
+    } else {
+      if (Math.random() > 0.6) {
+        typeToSpawn = 'wall';
+      } else {
+        typeToSpawn = 'none';
+        nextIsWallCount = 2;
+      }
+    }
+
+    if (typeToSpawn === 'wall') {
+      const obs = new THREE.Mesh(obsidianGeo, obsidianMat);
+      const lanes = [-1.5, 0, 1.5];
+      const lane = lanes[Math.floor(Math.random() * lanes.length)];
+      obs.position.set(lane, 4, zPos); 
+      obs.castShadow = true;
+      obs.userData = { type: 'wall' };
+      obstacles.push(obs);
+      scene.add(obs);
+    }
+  }
+
+  // --- ЧАСТИЦЫ ---
+  const particlesGeo = new THREE.BufferGeometry();
+  const pCount = 200;
+  const pPos = new Float32Array(pCount * 3);
+  for(let i=0; i<pCount*3; i++) pPos[i] = (Math.random() - 0.5) * 60;
+  particlesGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+  const particlesMat = new THREE.PointsMaterial({ color: 0xaa00ff, size: 0.2 });
+  const particleSystem = new THREE.Points(particlesGeo, particlesMat);
+  scene.add(particleSystem);
+
+  // --- ЛОГИКА ИГРЫ ---
+  let gameActive = false;
+  let score = 0;
+  let speed = 0.5;
+  let currentLane = 0;
+  
+  let playerY = 0.5;
+  let velocityY = 0;
+  const gravity = 0.03;
+  const jumpForce = 0.65; 
+  let isJumping = false;
+
+  let nextSpawnZ = 0;
+
+  const laneWidth = 1.5;
+  const WIN_SCORE = 100;
+
+  const scoreEl = document.getElementById('score');
+  const menuEl = document.getElementById('menu');
+  const startBtn = document.getElementById('startBtn');
+  const menuTitle = document.getElementById('menuTitle');
+  const menuText = document.getElementById('menuText');
+
+  function moveLane(dir) {
+    if (!gameActive) return;
+    currentLane += dir;
+    if (currentLane < -1) currentLane = -1;
+    if (currentLane > 1) currentLane = 1;
+  }
+
+  function jump() {
+    if (!gameActive) return;
+    if (!isJumping) {
+      velocityY = jumpForce;
+      isJumping = true;
+    }
+  }
+
+  window.addEventListener('touchstart', (e) => {
+    if (!gameActive) return;
+    e.preventDefault(); 
+    const touchY = e.touches[0].clientY;
+    const touchX = e.touches[0].clientX;
+    if (touchY < window.innerHeight / 2) jump();
+    else {
+      if (touchX < window.innerWidth / 2) moveLane(-1);
+      else moveLane(1);
+    }
+  }, { passive: false });
+
+  window.addEventListener('keydown', (e) => {
+    if (!gameActive) {
+        if(e.code === 'Enter' || e.code === 'Space') startGame();
+        return;
+    }
+    switch(e.code) {
+      case 'ArrowUp': case 'KeyW': jump(); break;
+      case 'ArrowLeft': case 'KeyA': moveLane(-1); break;
+      case 'ArrowRight': case 'KeyD': moveLane(1); break;
+    }
+  });
+
+  window.addEventListener('mousedown', (e) => {
+    if (!gameActive || e.target.tagName === 'BUTTON') return;
+    if (e.clientY < window.innerHeight / 2) jump();
+    else {
+      if (e.clientX < window.innerWidth / 2) moveLane(-1);
+      else moveLane(1);
+    }
+  });
+
+  startBtn.addEventListener('click', startGame);
+
+  function startGame() {
+    gameActive = true;
+    score = 0;
+    speed = 0.5;
+    currentLane = 0;
+    playerY = 0.5;
+    velocityY = 0;
+    isJumping = false;
+    nextIsWallCount = 0;
+    nextSpawnZ = 0;
+    
+    scoreEl.innerText = '0';
+    menuEl.classList.add('hidden');
+    
+    islands.forEach(o => scene.remove(o));
+    obstacles.forEach(o => scene.remove(o));
+    islands = [];
+    obstacles = [];
+    
+    spawnSegment(0);
+    nextSpawnZ = -TOTAL_SEGMENT;
+  }
+
+  function gameOver(win) {
+    gameActive = false;
+    menuEl.classList.remove('hidden');
+    
+    if (win) {
+      menuTitle.innerHTML = "🎉 ПОБЕДА! 🎉";
+      menuTitle.className = "win-text";
+      menuText.innerHTML = "<b>Ты не слон в посудной лавке!</b><br>Энд пройден.";
+      startBtn.innerText = "ЕЩЁ РАЗ";
+    } else {
+      menuTitle.innerText = " GAME OVER";
+      menuTitle.className = "";
+      menuTitle.style.color = "#ff5555";
+      menuText.innerHTML = `Счёт: <span style="color:#fff;font-weight:bold">${score}</span> из ${WIN_SCORE}`;
+      startBtn.innerText = "ВОЗРОДИТЬСЯ";
+    }
+  }
+
+  // --- ГЛАВНЫЙ ЦИКЛ ---
+  function animate() {
+    requestAnimationFrame(animate);
+
+    if (gameActive) {
+      const targetX = currentLane * laneWidth;
+      player.position.x += (targetX - player.position.x) * 0.15;
+      
+      if (isJumping) {
+        playerY += velocityY;
+        velocityY -= gravity;
+        if (playerY <= 0.5) {
+          playerY = 0.5;
+          isJumping = false;
+          velocityY = 0;
+        }
+      }
+      player.position.y = playerY;
+      
+      player.rotation.x -= speed * 0.3;
+
+      const moveSpeed = speed;
+      
+      islands.forEach(isl => isl.position.z += moveSpeed);
+      obstacles.forEach(obs => obs.position.z += moveSpeed);
+      particleSystem.position.z += moveSpeed * 0.5;
+      if(particleSystem.position.z > 20) particleSystem.position.z = -20;
+
+      // --- СПАВН ---
+      nextSpawnZ += moveSpeed;
+      if (nextSpawnZ > -60) {
+         spawnSegment(nextSpawnZ);
+         nextSpawnZ -= TOTAL_SEGMENT;
+         
+         score++;
+         scoreEl.innerText = score;
+         if (score >= WIN_SCORE) {
+            gameOver(true); return;
+         }
+         if (score % 5 === 0) speed += 0.02;
+      }
+
+      // --- УДАЛЕНИЕ (ИСПРАВЛЕНО: ЖДУТ ДОЛЬШЕ) ---
+      // Удаляем только то, что ушло далеко ЗА спину (z > 25)
+      for (let i = islands.length - 1; i >= 0; i--) {
+        if (islands[i].position.z > 25) {
+          scene.remove(islands[i]);
+          islands.splice(i, 1);
+        }
+      }
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        if (obstacles[i].position.z > 25) {
+          scene.remove(obstacles[i]);
+          obstacles.splice(i, 1);
+        }
+      }
+
+      // --- КОЛЛИЗИИ (ИСПРАВЛЕНО: ТОЧНАЯ ПРОВЕРКА) ---
+      
+      // Игрок находится на Z=0. Проверяем все объекты, которые пересекают Z=0.
+      
+      let onSafeGround = false;
+      let overPit = false;
+      let pitHeightLimit = 0;
+
+      // 1. Проверяем острова
+      for (let isl of islands) {
+        // Остров длина 40. Центр в isl.position.z.
+        // Границы: [z - 20, z + 20]
+        if (isl.position.z - 20 < 0 && isl.position.z + 20 > 0) {
+          onSafeGround = true;
+          break;
+        }
+      }
+
+      // 2. Проверяем невидимые барьеры (дыры)
+      for (let obs of obstacles) {
+        if (obs.userData.type === 'invisible_pit') {
+           // Барьер длина 8. Границы: [z - 4, z + 4]
+           if (obs.position.z - 4 < 0 && obs.position.z + 4 > 0) {
+              overPit = true;
+              // Барьер центр 1.5, высота 2. Верх на 2.5.
+              // Шарик радиус 0.5. Чтобы не задеть, центр шара должен быть выше 2.5 + 0.5 = 3.0?
+              // Сделаем чуть мягче: 2.2
+              pitHeightLimit = 2.2; 
+              break;
+           }
+        }
+      }
+
+      // Логика смерти от падения:
+      if (!onSafeGround) {
+         if (!overPit) {
+             // Мы в пустоте между сегментами (баг или падение)
+             if (playerY < 0.2) gameOver(false);
+         } else {
+             // Мы над дырой. Если низко - смерть.
+             if (playerY < pitHeightLimit) {
+                 gameOver(false);
+             }
+         }
+      }
+
+      // 3. Столкновение с обсидианом
+      for (let obs of obstacles) {
+        if (obs.position.z > -2 && obs.position.z < 2) {
+           if (obs.userData.type === 'wall') {
+              if (Math.abs(obs.position.x - player.position.x) < 0.9) {
+                 gameOver(false); return;
+              }
+           }
+        }
+      }
+
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  animate();
+</script>
+</body>
+</html>
+
